@@ -30,7 +30,7 @@ def create_event(
     scheduled_at: Optional[str] = None,
     due_date: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Валидирует поля и создает запись в БД."""
+    """Валидирует поля и сохраняет запись в БД с автоинициализацией таблицы."""
     clean_title = title.strip() if isinstance(title, str) else ""
     if not clean_title:
         return make_result(
@@ -93,6 +93,7 @@ def create_event(
 
     conn = None
     try:
+        init_db()
         conn = get_connection()
         with conn:
             cursor = conn.cursor()
@@ -157,6 +158,7 @@ def list_events(start: str, end: str) -> list[dict[str, Any]]:
 
     conn = None
     try:
+        init_db()
         conn = get_connection()
         rows = conn.execute(
             select_sql, (norm_start, norm_end, norm_start, norm_end)
@@ -201,6 +203,7 @@ def search_events(query: str, limit: int = 50) -> list[dict[str, Any]]:
 
     conn = None
     try:
+        init_db()
         conn = get_connection()
         rows = conn.execute("SELECT * FROM events ORDER BY id DESC").fetchall()
     except Exception:
