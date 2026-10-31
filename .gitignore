@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local database
+*.db
+
+# Test audio files
+test.ogg
+test.wav
+
+# Temporary frontend and backend copies
+app.py
+backend/
