@@ -221,6 +221,7 @@ __marimo__/
 
 # Local database
 *.db
+*.sqlite3
 
 # Test audio files
 test.ogg
@@ -229,3 +230,5 @@ test.wav
 # Temporary frontend and backend copies
 app.py
 backend/
+
+.idea/
