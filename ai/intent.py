@@ -2,6 +2,8 @@ import re
 import json
 import requests
 
+from datetime import datetime, timedelta
+
 
 MODEL = "qwen3:4b"
 OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -141,6 +143,39 @@ JSON должен содержать ровно 9 ключей:
 }
 """
 
+def _weekday_date(text: str, now_iso: str):
+    """Возвращает ближайшую дату указанного дня недели или None."""
+    weekdays = {
+        "понедельник": 0,
+        "вторник": 1,
+        "сред": 2,
+        "четверг": 3,
+        "пятниц": 4,
+        "суббот": 5,
+        "воскресень": 6,
+    }
+
+    match = re.search(
+        r"\b(понедельник\w*|вторник\w*|сред\w*|четверг\w*|пятниц\w*|суббот\w*|воскресень\w*)\b",
+        text.lower()
+    )
+    if not match:
+        return None
+
+    weekday_word = match.group(1)
+    target_weekday = next(
+        day for prefix, day in weekdays.items()
+        if weekday_word.startswith(prefix)
+    )
+
+    current_date = datetime.fromisoformat(now_iso).date()
+    days_ahead = (target_weekday - current_date.weekday()) % 7
+
+    if days_ahead == 0 and re.search(r"\bследующ\w*\b", text.lower()):
+        days_ahead = 7
+
+    return current_date + timedelta(days=days_ahead)
+
 
 REQUIRED_KEYS = {
     "action",
@@ -201,5 +236,20 @@ def parse_intent(text: str, now_iso: str) -> dict:
 
     if not isinstance(intent["missing_fields"], list):
         raise ValueError("missing_fields должен быть списком")
+
+    # Дату дня недели вычисляем средствами Python, а не доверяем модели.
+    if intent["action"] == "create_task":
+        weekday_date = _weekday_date(text, now_iso)
+        if weekday_date is not None:
+            if intent["date_time"]:
+                parsed_datetime = datetime.fromisoformat(intent["date_time"])
+                intent["date_time"] = parsed_datetime.replace(
+                    year=weekday_date.year,
+                    month=weekday_date.month,
+                    day=weekday_date.day
+                ).isoformat()
+                intent["due_date"] = None
+            else:
+                intent["due_date"] = weekday_date.isoformat()
 
     return intent 
