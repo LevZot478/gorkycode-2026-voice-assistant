@@ -178,8 +178,11 @@ def parse_fast_intent(text: str, now_iso: str):
             missing.append("время")
         return _intent("clarify", title=title or "Встреча",
                        kind="meeting", missing_fields=missing)
-    if kind == "meeting" and not title:
-        title = "Встреча"
+    if kind == "meeting":
+        if not title:
+            title = "Встреча"
+        elif title.lower().startswith(("с ", "со ")):
+            title = "Встреча " + title.lower()
     if kind != "meeting" and not title:
         return None
     if hour is not None and day is None:
