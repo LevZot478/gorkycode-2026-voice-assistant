@@ -1,0 +1,14 @@
+.git
+.github
+__pycache__
+.pytest_cache
+*.pyc
+*.db
+*.sqlite3
+.env
+.env.*
+.streamlit/secrets.toml
+.venv
+venv
+test.ogg
+test.wav
