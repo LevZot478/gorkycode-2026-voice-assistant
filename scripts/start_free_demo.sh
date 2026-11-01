@@ -8,6 +8,11 @@ echo "=== Installing app requirements (first time may take a few minutes) ==="
 python -m pip install -r requirements.txt
 
 if ! command -v ollama >/dev/null 2>&1; then
+  if ! command -v zstd >/dev/null 2>&1; then
+    echo "=== Installing zstd required by Ollama installer ==="
+    sudo apt-get update -qq
+    sudo apt-get install -y zstd
+  fi
   echo "=== Installing Ollama locally on the Codespace ==="
   curl -fsSL https://ollama.com/install.sh | sh
 fi
