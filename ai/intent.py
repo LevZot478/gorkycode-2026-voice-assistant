@@ -357,6 +357,12 @@ def parse_intent(text: str, now_iso: str) -> dict:
     """Convert natural language to the 9-key intent contract used by backend."""
     text = re.sub(r"\bпосле\s+завтра\b", "послезавтра", text,
                   flags=re.IGNORECASE)
+    if os.getenv("FAST_INTENT", "0").lower() in ("1", "true", "yes"):
+        from ai.fast_intent import parse_fast_intent
+        fast = parse_fast_intent(text, now_iso)
+        if fast is not None:
+            return fast
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user",
