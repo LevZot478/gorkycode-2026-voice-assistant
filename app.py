@@ -4,6 +4,7 @@
 -> backend.execute_intent -> ответ. Без модулей ai/backend работает MOCK.
 Запуск: python -m streamlit run app.py
 """
+import re
 import hashlib
 from datetime import date, datetime, timedelta, timezone
 from html import escape
@@ -181,31 +182,169 @@ def reply(level, content, **extra):
     st.session_state.messages.append(
         {"role": "assistant", "level": level, "content": content, **extra})
 
+def parse_spoken_time(text):
+    """Преобразует время, записанное словами, в формат HH:MM."""
+
+    text = text.lower()
+
+    # Варианты: «в половине пятого», «в половине третьего»
+    half_hours = {
+        "второго": 1,
+        "третьего": 2,
+        "четвертого": 3,
+        "четвёртого": 3,
+        "пятого": 4,
+        "шестого": 5,
+        "седьмого": 6,
+        "восьмого": 7,
+        "девятого": 8,
+        "десятого": 9,
+        "одиннадцатого": 10,
+        "двенадцатого": 11
+    }
+
+    # Варианты: «в четверть шестого», «в четверть пятого»
+    if "четверть" in text:
+        quarter_hours = {
+            "второго": 1,
+            "третьего": 2,
+            "четвертого": 3,
+            "четвёртого": 3,
+            "пятого": 4,
+            "шестого": 5,
+            "седьмого": 6,
+            "восьмого": 7,
+            "девятого": 8,
+            "десятого": 9,
+            "одиннадцатого": 10,
+            "двенадцатого": 11
+        }
+
+        for word, hour in quarter_hours.items():
+            if re.search(rf"\b{word}\b", text):
+                if any(w in text for w in (
+                    "дня", "днем", "днём", "вечера", "вечером"
+                )):
+                    hour += 12
+
+                return f"{hour:02d}:15"
+    if "половине" in text:
+        for word, hour in half_hours.items():
+            if re.search(rf"\b{word}\b", text):
+                if "утра" in text or "утром" in text:
+                    pass
+                elif any(w in text for w in ("дня", "днем", "днём",
+                                              "вечера", "вечером")):
+                    hour += 12
+
+                return f"{hour:02d}:30"
+
+    numbers = {
+        "один": 1, "одна": 1, "два": 2, "две": 2,
+        "три": 3, "четыре": 4, "пять": 5,
+        "шесть": 6, "семь": 7, "восемь": 8,
+        "девять": 9, "десять": 10, "одиннадцать": 11,
+        "двенадцать": 12
+    }
+
+    # Поддержка чисел, распознанных Whisper цифрами
+    digit_match = re.search(r'\b(\d{1,2})\b', text)
+
+    if digit_match:
+        number = int(digit_match.group(1))
+    else:
+        number = None
+        for word, value in numbers.items():
+            if re.search(rf"\b{word}\b", text):
+                number = value
+                break
+
+    if number is None:
+        return None
+
+    if "утра" in text or "утром" in text:
+        hour = number % 12
+
+    elif "дня" in text or "днем" in text or "днём" in text:
+        hour = number % 12 + 12
+
+    elif "вечера" in text or "вечером" in text:
+        hour = number % 12 + 12
+
+    elif "ночи" in text or "ночью" in text:
+        hour = number % 12
+
+    else:
+        return None
+
+    return f"{hour:02d}:00"
 
 def handle_request(text, from_voice=False):
     """Один маршрут для текста и голоса: UI -> AI -> Backend -> UI."""
     st.session_state.messages.append(
         {"role": "user", "content": text, "voice": from_voice})
+
     now_iso = datetime.now(MSK).isoformat(timespec="seconds")
+
+    # Если ожидаем уточнение времени встречи
+    pending = st.session_state.pending_meeting
+
+    if pending:
+        time_match = re.search(
+            r'\b(?:в\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\b',
+            text.lower()
+        )
+
+        spoken_time = parse_spoken_time(text)
+
+        time_value = None
+
+        if time_match:
+            time_value = (
+                f"{time_match.group(1)}:{time_match.group(2)}"
+            )
+        elif spoken_time:
+            time_value = spoken_time
+
+        if time_value:
+            full_text = f"{pending['text']} в {time_value}"
+            st.session_state.pending_meeting = None
+            text = full_text
+
     try:
         intent = parse_intent(text, now_iso)
     except Exception as exc:
         return reply("error", f"Не удалось разобрать запрос: {exc}")
+
     try:
         res = execute_intent(intent)
     except Exception as exc:
         return reply("error", f"Ошибка при выполнении действия: {exc}")
+
+    # Сохраняем встречу, если нужно уточнить время
+    if (intent.get("action") in ("create_meeting", "clarify")
+            and intent.get("kind") == "meeting"
+            and intent.get("date_time") is None
+            and "время" in intent.get("missing_fields", [])):
+        st.session_state.pending_meeting = {"text": text}
     if res.get("needs_clarification"):
         level = "warning"
     elif not res.get("ok"):
         level = "error"
     else:
         level = "success"
-    events = res.get("events") or ([res["event"]] if res.get("event") else [])
-    reply(level, res.get("message") or "Готово", events=events,
-          show_empty=level == "success"
-          and intent.get("action") in ("list_events", "search_events"))
 
+    events = res.get("events") or (
+        [res["event"]] if res.get("event") else []
+    )
+
+    reply(
+        level,
+        res.get("message") or "Готово",
+        events=events,
+        show_empty=level == "success"
+        and intent.get("action") in ("list_events", "search_events")
+    )
 
 def transcribe_once(audio_file):
     data = audio_file.getvalue()
@@ -223,7 +362,12 @@ def transcribe_once(audio_file):
 # ---------------------------------------------------------------- страница
 st.set_page_config(page_title="Голосовой ассистент", page_icon="🎙️")
 st.markdown(CSS, unsafe_allow_html=True)
-for k, v in (("messages", []), ("last_audio_hash", None), ("audio_key", 0)):
+for k, v in (
+    ("messages", []),
+    ("last_audio_hash", None),
+    ("audio_key", 0),
+    ("pending_meeting", None)
+):
     st.session_state.setdefault(k, v)
 
 pill = ('<span class="pill mock">● MOCK-режим</span>' if USING_MOCK
