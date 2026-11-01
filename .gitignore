@@ -227,8 +227,5 @@ __marimo__/
 test.ogg
 test.wav
 
-# Temporary frontend and backend copies
-app.py
-backend/
-
+# Track frontend and backend code normally
 .idea/
