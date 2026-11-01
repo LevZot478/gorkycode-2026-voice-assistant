@@ -5,6 +5,7 @@
 Запуск: python -m streamlit run app.py
 """
 import re
+import os
 import hashlib
 from datetime import date, datetime, timedelta, timezone
 from html import escape
@@ -325,7 +326,8 @@ def handle_request(text, from_voice=False):
     if (intent.get("action") in ("create_meeting", "clarify")
             and intent.get("kind") == "meeting"
             and intent.get("date_time") is None
-            and "время" in intent.get("missing_fields", [])):
+            and any(str(x).lower() in ("время", "date_time", "time")
+                    for x in intent.get("missing_fields", []))):
         st.session_state.pending_meeting = {"text": text}
     if res.get("needs_clarification"):
         level = "warning"
@@ -370,8 +372,20 @@ for k, v in (
 ):
     st.session_state.setdefault(k, v)
 
-pill = ('<span class="pill mock">● MOCK-режим</span>' if USING_MOCK
-        else '<span class="pill ok">● Подключено</span>')
+_has_giga = any(os.getenv(k) for k in (
+    "GIGACHAT_AUTH_KEY", "GIGACHAT_CREDENTIALS", "GIGACHAT_ACCESS_TOKEN"))
+_has_groq = bool(os.getenv("GROQ_API_KEY"))
+_is_cloud = os.getenv("APP_ENV", "").lower() in ("production", "cloud")
+if USING_MOCK:
+    pill = '<span class="pill mock">● DEMO / MOCK</span>'
+elif _has_giga:
+    pill = '<span class="pill ok">● Режим: GigaChat API</span>'
+elif _has_groq:
+    pill = '<span class="pill ok">● Режим: облачный AI</span>'
+elif _is_cloud:
+    pill = '<span class="pill mock">● AI не настроен</span>'
+else:
+    pill = '<span class="pill mock">● Режим: локальная Ollama</span>'
 st.markdown(f'<div class="hero"><h1>🎙️ Голосовой ассистент</h1>'
             f'<p>Задачи, напоминания и встречи — говорите или пишите '
             f'как удобно.</p>{pill}</div>', unsafe_allow_html=True)
@@ -379,6 +393,13 @@ if USING_MOCK:
     st.warning("Модули " + ", ".join(
         n for n, f in (("ai", USING_MOCK_AI), ("backend", USING_MOCK_BACKEND))
         if f) + " не найдены — данные ненастоящие.")
+
+if _is_cloud and not (_has_giga or _has_groq):
+    st.warning("Для AI-команд добавьте секрет GIGACHAT_AUTH_KEY в настройках сервера.")
+if _is_cloud and not (
+    os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY")
+) and not os.getenv("DATABASE_PATH"):
+    st.warning("Сейчас используется временная SQLite. Для хранения после перезапуска настройте Supabase или DATABASE_PATH на постоянном диске.")
 
 # быстрые подсказки
 queued = None
@@ -455,4 +476,4 @@ with st.sidebar:
                                (start + timedelta(days=7)).isoformat())
         render_events(upcoming, show_empty=True)
     except Exception as exc:
-        st.error(f"Не удалось загрузить события: {exc}")
+        st.error("Не удалось загрузить события. Проверьте настройки базы данных.")
