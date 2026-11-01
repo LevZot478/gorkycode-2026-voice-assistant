@@ -1,6 +1,9 @@
 import re
 import json
 import requests
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 from datetime import datetime, timedelta
 
@@ -220,31 +223,32 @@ def parse_intent(text: str, now_iso: str) -> dict:
         flags=re.IGNORECASE
     )
 
-    response = requests.post(
-        OLLAMA_URL,
-        json={
-            "model": MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Текущее время: {now_iso}\nЗапрос: {text}"
-                }
-            ],
-            "stream": False,
-            "think": False,
-            "format": "json",
-            "options": {
-                "temperature": 0
-            }
-        },
-        timeout=120
-    )
-
-    response.raise_for_status()
-
-    result = response.json()
-    content = result["message"]["content"]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Текущее время: {now_iso}\nЗапрос: {text}"}
+    ]
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if api_key:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                  "messages": messages, "temperature": 0,
+                  "response_format": {"type": "json_object"}},
+            timeout=60
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    else:
+        response = requests.post(
+            os.getenv("OLLAMA_URL", OLLAMA_URL),
+            json={"model": os.getenv("OLLAMA_MODEL", MODEL),
+                  "messages": messages, "stream": False, "think": False,
+                  "format": "json", "options": {"temperature": 0}},
+            timeout=120
+        )
+        response.raise_for_status()
+        content = response.json()["message"]["content"]
 
     intent = json.loads(content)
 
