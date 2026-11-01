@@ -44,6 +44,8 @@ unset GIGACHAT_AUTH_KEY GIGACHAT_CREDENTIALS GIGACHAT_ACCESS_TOKEN GROQ_API_KEY
 export APP_ENV=development
 export OLLAMA_URL=http://127.0.0.1:11434/api/chat
 export OLLAMA_MODEL=qwen3:1.7b
+# Fast deterministic handling for common demo scenarios; complex requests still use the LLM.
+export FAST_INTENT=1
 export WHISPER_MODEL_SIZE=tiny
 export DATABASE_PATH="$HOME/.local/share/gorkycode/events.db"
 
