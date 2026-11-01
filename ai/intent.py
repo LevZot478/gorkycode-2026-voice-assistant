@@ -210,55 +210,175 @@ REQUIRED_KEYS = {
 }
 
 
-def parse_intent(text: str, now_iso: str) -> dict:
-    """
-    Преобразует текст пользователя в структурированный JSON.
-    """
 
-    # Нормализация фразы «после завтра»
-    text = re.sub(
-        r"\bпосле\s+завтра\b",
-        "послезавтра",
-        text,
-        flags=re.IGNORECASE
+# The GigaChat access token is valid for 30 minutes; cache it for at most 25.
+_GIGACHAT_TOKEN = {"value": None, "valid_until": 0.0}
+
+
+def _gigachat_ssl_verify():
+    """Preserve TLS verification. Set a verified Russian CA bundle if needed."""
+    return os.getenv("GIGACHAT_CA_BUNDLE") or True
+
+
+def _get_gigachat_token(force_refresh=False):
+    from time import monotonic
+    from uuid import uuid4
+
+    fixed_token = os.getenv("GIGACHAT_ACCESS_TOKEN", "").strip()
+    if fixed_token:
+        return fixed_token  # Short-lived token supplied explicitly.
+
+    if (not force_refresh and _GIGACHAT_TOKEN["value"]
+            and monotonic() < _GIGACHAT_TOKEN["valid_until"]):
+        return _GIGACHAT_TOKEN["value"]
+
+    key = (os.getenv("GIGACHAT_AUTH_KEY")
+           or os.getenv("GIGACHAT_CREDENTIALS") or "").strip()
+    if not key:
+        raise RuntimeError("Не настроен ключ авторизации GigaChat (GIGACHAT_AUTH_KEY).")
+
+    # The key in Sber Studio is a Base64 authorization key, not a Bearer token.
+    response = requests.post(
+        "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+        headers={"Authorization": "Basic " + key,
+                 "RqUID": str(uuid4()),
+                 "Accept": "application/json",
+                 "Content-Type": "application/x-www-form-urlencoded"},
+        data={"scope": os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")},
+        timeout=25,
+        verify=_gigachat_ssl_verify(),
     )
+    response.raise_for_status()
+    value = response.json()["access_token"]
+    _GIGACHAT_TOKEN.update(value=value, valid_until=monotonic() + 25 * 60)
+    return value
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Текущее время: {now_iso}\nЗапрос: {text}"}
-    ]
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if api_key:
+
+def _call_gigachat(messages):
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json"}
+    payload = {
+        "model": os.getenv("GIGACHAT_MODEL", "GigaChat-2"),
+        "messages": messages,
+        "temperature": 0,
+        "stream": False,
+    }
+    for attempt in range(2):
+        headers["Authorization"] = "Bearer " + _get_gigachat_token(
+            force_refresh=(attempt > 0))
+        response = requests.post(
+            "https://api.giga.chat/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=90,
+            verify=_gigachat_ssl_verify(),
+        )
+        if response.status_code == 401 and attempt == 0 and not os.getenv("GIGACHAT_ACCESS_TOKEN"):
+            _GIGACHAT_TOKEN.update(value=None, valid_until=0.0)
+            continue
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    raise RuntimeError("GigaChat: не удалось обновить токен доступа.")
+
+
+def _call_llm(messages):
+    """Select GigaChat first, and keep earlier providers for local development."""
+    if any(os.getenv(k) for k in ("GIGACHAT_AUTH_KEY",
+                                   "GIGACHAT_CREDENTIALS",
+                                   "GIGACHAT_ACCESS_TOKEN")):
+        return _call_gigachat(messages)
+
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_key:
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-                  "messages": messages, "temperature": 0,
-                  "response_format": {"type": "json_object"}},
-            timeout=60
+            headers={"Authorization": "Bearer " + groq_key},
+            json={
+                "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+                "messages": messages,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=60,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        return response.json()["choices"][0]["message"]["content"]
+
+    # Never try localhost:11434 from a deployed public server without a provider.
+    if os.getenv("APP_ENV", "").lower() in ("production", "cloud"):
+        raise RuntimeError(
+            "AI ещё не настроен: укажите GIGACHAT_AUTH_KEY в секретах хостинга."
+        )
+    response = requests.post(
+        os.getenv("OLLAMA_URL", OLLAMA_URL),
+        json={
+            "model": os.getenv("OLLAMA_MODEL", MODEL),
+            "messages": messages,
+            "stream": False,
+            "think": False,
+            "format": "json",
+            "options": {"temperature": 0},
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()["message"]["content"]
+
+
+def _decode_intent(content):
+    """GigaChat may wrap a JSON object in Markdown; normalize the backend contract."""
+    if isinstance(content, dict):
+        data = content
     else:
-        response = requests.post(
-            os.getenv("OLLAMA_URL", OLLAMA_URL),
-            json={"model": os.getenv("OLLAMA_MODEL", MODEL),
-                  "messages": messages, "stream": False, "think": False,
-                  "format": "json", "options": {"temperature": 0}},
-            timeout=120
-        )
-        response.raise_for_status()
-        content = response.json()["message"]["content"]
+        value = str(content).strip()
+        if value.startswith(""+"\u0060\u0060\u0060"):
+            value = re.sub(r"^" + "\u0060\u0060\u0060" + r"(?:json)?\s*|\s*" + "\u0060\u0060\u0060" + r"$", "", value, flags=re.IGNORECASE).strip()
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            match = re.search(r"\{[\s\S]*\}", value)
+            if not match:
+                raise ValueError("AI не вернул JSON с действием.")
+            data = json.loads(match.group(0))
+    if not isinstance(data, dict):
+        raise ValueError("AI вернул ответ не в виде объекта.")
+    missing = data.get("missing_fields")
+    if not isinstance(missing, list):
+        missing = []
+    clean = {k: data.get(k) for k in REQUIRED_KEYS}
+    clean["missing_fields"] = missing
+    if clean["action"] not in ("create_task", "create_meeting",
+                              "list_events", "search_events", "clarify"):
+        raise ValueError("AI не смог определить действие.")
+    return clean
 
-    intent = json.loads(content)
 
-    if set(intent.keys()) != REQUIRED_KEYS:
-        raise ValueError("Модель вернула неправильную структуру JSON")
+def parse_intent(text: str, now_iso: str) -> dict:
+    """Convert natural language to the 9-key intent contract used by backend."""
+    text = re.sub(r"\bпосле\s+завтра\b", "послезавтра", text,
+                  flags=re.IGNORECASE)
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user",
+         "content": f"Текущее время: {now_iso}\nЗапрос: {text}"},
+    ]
 
-    if not isinstance(intent["missing_fields"], list):
-        raise ValueError("missing_fields должен быть списком")
+    try:
+        content = _call_llm(messages)
+    except requests.exceptions.SSLError as exc:
+        raise RuntimeError(
+            "GigaChat: не доверен сертификат Минцифры. "
+            "Установите корневой сертификат или укажите GIGACHAT_CA_BUNDLE."
+        ) from exc
+    except requests.exceptions.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else "?"
+        raise RuntimeError(
+            f"AI API вернул HTTP {code}. Проверьте ключ, доступ к модели и лимиты."
+        ) from exc
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError("AI API недоступен по сети; проверьте соединение.") from exc
 
-    # Дату дня недели вычисляем средствами Python, а не доверяем модели.
+    intent = _decode_intent(content)
     if intent["action"] == "create_task":
         weekday_date = _weekday_date(text, now_iso)
         if weekday_date is not None:
@@ -267,10 +387,9 @@ def parse_intent(text: str, now_iso: str) -> dict:
                 intent["date_time"] = parsed_datetime.replace(
                     year=weekday_date.year,
                     month=weekday_date.month,
-                    day=weekday_date.day
+                    day=weekday_date.day,
                 ).isoformat()
                 intent["due_date"] = None
             else:
                 intent["due_date"] = weekday_date.isoformat()
-
-    return intent 
+    return intent
