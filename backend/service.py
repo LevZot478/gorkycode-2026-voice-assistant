@@ -59,8 +59,8 @@ def _normalize_event_dict(d: Dict[str, Any]) -> Dict[str, Any]:
     scheduled_at = d.get("scheduled_at")
     due_date = d.get("due_date") or d.get("date") or None
 
-    raw_date = (d.get("date") or "").strip()
-    raw_time = (d.get("time") or "").strip()
+    raw_date = str(d.get("date") or "").strip()
+    raw_time = str(d.get("time") or "").strip()
 
     if not scheduled_at and raw_date and raw_time:
         t = f"{raw_time}:00" if len(raw_time) == 5 else raw_time
@@ -110,8 +110,6 @@ def execute_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
         if not database.is_supabase_active():
             conn_check = get_connection()
             conn_check.close()
-        else:
-            _ = get_connection()
 
         if action in ("create_task", "create_meeting"):
             title = (intent.get("title") or "").strip()
@@ -195,8 +193,10 @@ def execute_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
                 missing_fields=intent.get("missing_fields", []),
             )
 
-    except Exception as e:
-        return make_result(ok=False, message=str(e), error_code="db_error")
+    except Exception:
+        import logging
+        logging.exception("Database operation failed")
+        return make_result(ok=False, message="Ошибка базы данных. Проверьте подключение.", error_code="db_error")
 
     return make_result(ok=False, message="Действие не обработано", error_code="validation_error")
 
