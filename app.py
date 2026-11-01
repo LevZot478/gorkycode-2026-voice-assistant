@@ -384,6 +384,8 @@ elif _has_groq:
     pill = '<span class="pill ok">● Режим: облачный AI</span>'
 elif _is_cloud:
     pill = '<span class="pill mock">● AI не настроен</span>'
+elif os.getenv("FAST_INTENT", "0").lower() in ("1", "true", "yes"):
+    pill = '<span class="pill ok">● Быстрые команды + Ollama</span>'
 else:
     pill = '<span class="pill mock">● Режим: локальная Ollama</span>'
 st.markdown(f'<div class="hero"><h1>🎙️ Голосовой ассистент</h1>'
