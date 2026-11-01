@@ -232,3 +232,5 @@ app.py
 backend/
 
 .idea/
+
+.env
